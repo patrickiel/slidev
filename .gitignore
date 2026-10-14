@@ -1,3 +1,4 @@
 /target
 # Builds against a local den checkout; not for the release build.
 /.cargo
+/.den/layout.json

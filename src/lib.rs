@@ -7,6 +7,8 @@
 //! and waited for here too (`server.rs`). The preview is a browser tab this
 //! extension owns (`open_browser` with a tab name), moved from slide to slide
 //! with a `navigate` message Slidev's page listens for, so it never reloads.
+//! A deck's tab also offers Slide beside Source and Preview: a file view
+//! (`set_file_views`) whose page shows the slide under the cursor.
 //! A worker thread owns each folder's state and takes den's events over a
 //! channel; between them it waits for starting servers to answer.
 
@@ -20,7 +22,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use den_extension::view::{Column, Content, Line, Row, SelectOption, Span, ToolbarItem, actions};
-use den_extension::{Button, Context, Extension, Host, events, register};
+use den_extension::{Button, Context, Extension, FileView, Host, events, register};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -30,6 +32,8 @@ use crate::slides::{Deck, Entry, same_file};
 const VIEW: &str = "slides";
 /// The name of the preview's browser tab.
 const PREVIEW: &str = "preview";
+/// The id of the Slide file view.
+const SLIDE: &str = "slide";
 /// How often a starting server is asked whether it is up.
 const TICK: Duration = Duration::from_millis(500);
 /// How long a server may take to start before it is given up on.
@@ -109,10 +113,12 @@ enum State {
 }
 
 /// Where to show the deck once its server answers.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Show {
     Tab,
     Browser,
+    /// The Slide view of this file's tab.
+    File(PathBuf),
 }
 
 /// A dev server for one deck.
@@ -140,6 +146,8 @@ struct Folder {
     /// The deck the preview tab shows.
     previewing: Option<PathBuf>,
     button: bool,
+    /// The pattern of the Slide file view, as last set.
+    file_pattern: String,
 }
 
 impl Folder {
@@ -158,6 +166,7 @@ impl Folder {
             servers: Vec::new(),
             previewing: None,
             button: false,
+            file_pattern: String::new(),
         }
     }
 
@@ -225,7 +234,10 @@ impl Worker {
         let text = |key: &str| data[key].as_str().map(str::to_string);
         let path = text("path").map(PathBuf::from);
         match name {
-            events::WORKSPACE_OPENED => self.set_button(&root),
+            events::WORKSPACE_OPENED => {
+                self.set_button(&root);
+                self.set_file_view(&root);
+            }
             events::ACTIVE_FILE_CHANGED => {
                 if let Some(path) = path {
                     self.file_shown(&root, path);
@@ -249,6 +261,12 @@ impl Worker {
                 Some("export") => self.export(&root),
                 _ => {}
             },
+            events::FILE_VIEW_SHOWN if text("view").as_deref() == Some(SLIDE) => {
+                let line = data["line"].as_u64().unwrap_or(1) as usize;
+                if let Some(path) = path {
+                    self.slide_shown(&root, path, line, text("url"));
+                }
+            }
             events::VIEW_OPENED if text("view").as_deref() == Some(VIEW) => {
                 self.folder(&root).view_open = true;
                 self.draw(&root);
@@ -293,6 +311,33 @@ impl Worker {
         _ = host.set_buttons(root, &[button]);
     }
 
+    /// Slide beside Source and Preview, above the decks and the files the
+    /// one shown imports.
+    fn set_file_view(&mut self, root: &str) {
+        let host = self.host;
+        let folder = self.folder(root);
+        let mut files: Vec<&Path> = folder.decks.iter().map(PathBuf::as_path).collect();
+        files.extend(folder.slides.files.iter().map(PathBuf::as_path));
+        let pattern = files_pattern(&files);
+        if pattern == folder.file_pattern {
+            return;
+        }
+        folder.file_pattern = pattern.clone();
+        let views = match pattern.is_empty() {
+            true => Vec::new(),
+            false => vec![FileView {
+                id: SLIDE.into(),
+                label: "Slide".into(),
+                tooltip: "The slide the cursor is on, from the dev server".into(),
+                file_pattern: pattern,
+            }],
+        };
+        // A den without file views says so; the rest works there all the same.
+        if let Err(err) = host.set_file_views(root, &views) {
+            host.log(format!("set_file_views: {err}"));
+        }
+    }
+
     /// A file's tab came to the front: a deck other than the one shown takes its place.
     fn file_shown(&mut self, root: &str, path: PathBuf) {
         let folder = self.folder(root);
@@ -301,6 +346,7 @@ impl Worker {
         }
         folder.set_deck(path);
         self.set_button(root);
+        self.set_file_view(root);
         self.draw(root);
     }
 
@@ -315,6 +361,7 @@ impl Worker {
         } else {
             return;
         }
+        self.set_file_view(root);
         self.draw(root);
     }
 
@@ -336,6 +383,31 @@ impl Worker {
         }
     }
 
+    /// A tab switched to Slide: its page goes to the slide under the
+    /// file's cursor, moved there when it already shows the deck's server.
+    fn slide_shown(&mut self, root: &str, path: PathBuf, line: usize, url: Option<String>) {
+        let host = self.host;
+        self.file_shown(root, path.clone());
+        let folder = self.folder(root);
+        if !folder.slides.has_file(&path) {
+            return;
+        }
+        if let Some(index) = folder.slides.slide_at(&path, line) {
+            folder.current = Some(index);
+        }
+        let page = folder.page();
+        let serving = folder.server().filter(|s| s.state == State::Ready).map(|s| s.port);
+        self.select(root);
+        if let Some(port) = serving
+            && url.is_some_and(|url| url.starts_with(&format!("http://localhost:{port}/")))
+            && server::ping(port)
+        {
+            _ = host.file_view_script(root, &path.to_string_lossy(), SLIDE, &navigate_script(page));
+            return;
+        }
+        self.preview(root, Show::File(path));
+    }
+
     fn show(&mut self, root: &str) {
         if let Err(err) = self.host.open_view(root, VIEW) {
             self.host.log(format!("open_view: {err}"));
@@ -352,7 +424,7 @@ impl Worker {
         };
         let state = folder.server().map(|s| (s.state, s.port));
         match state {
-            Some((State::Ready, port)) if server::ping(port) => return open(host, folder, show),
+            Some((State::Ready, port)) if server::ping(port) => return open(host, folder, &show),
             Some((State::Starting(_), _)) => {
                 if let Some(server) = folder.server_mut() {
                     server.then = Some(show);
@@ -368,7 +440,7 @@ impl Worker {
         let serves = server::probe(port).is_some_and(|entry| entry.is_empty() || same_file(Path::new(&entry), &deck));
         if serves && !folder.servers.iter().any(|s| s.port == port) {
             folder.servers.push(Server { deck, port, state: State::Ready, then: None });
-            return open(host, folder, show);
+            return open(host, folder, &show);
         }
         let port = server::free_port(port);
         let dir = server::project_dir(&deck);
@@ -413,7 +485,7 @@ impl Worker {
             for (deck, show) in ready {
                 // Unless another deck took its place meanwhile.
                 if folder.deck.as_deref().is_some_and(|d| same_file(d, &deck)) {
-                    open(host, folder, show);
+                    open(host, folder, &show);
                 }
             }
         }
@@ -430,11 +502,7 @@ impl Worker {
         if !showing || folder.server().is_none_or(|s| s.state != State::Ready) {
             return;
         }
-        let script = format!(
-            "window.postMessage({{ target: 'slidev', type: 'navigate', no: {}, clicks: 0 }}, '*')",
-            folder.page()
-        );
-        _ = host.browser_script(root, PREVIEW, &script);
+        _ = host.browser_script(root, PREVIEW, &navigate_script(folder.page()));
     }
 
     fn action(&mut self, root: &str, action: &str, row: Option<String>, data: Option<String>, value: Option<String>) {
@@ -478,11 +546,13 @@ impl Worker {
                     }
                 }
                 self.set_button(root);
+                self.set_file_view(root);
                 self.draw(root);
             }
             "deck" => {
                 if let Some(deck) = value.map(PathBuf::from) {
                     self.folder(root).set_deck(deck);
+                    self.set_file_view(root);
                     self.draw(root);
                 }
             }
@@ -541,9 +611,48 @@ impl Worker {
     }
 }
 
+/// The script that moves Slidev's page to `page`, without reloading it.
+fn navigate_script(page: usize) -> String {
+    format!("window.postMessage({{ target: 'slidev', type: 'navigate', no: {page}, clicks: 0 }}, '*')")
+}
+
+/// A pattern that matches `files`' paths and nothing else, whichever way
+/// their separators go (and, on Windows, in any case); empty for none.
+fn files_pattern(files: &[&Path]) -> String {
+    let mut alternatives: Vec<String> = Vec::new();
+    for file in files {
+        let alternative = slides::normalize(file)
+            .to_string_lossy()
+            .split(['\\', '/'])
+            .map(escape)
+            .collect::<Vec<_>>()
+            .join(r"[\\/]");
+        if !alternatives.contains(&alternative) {
+            alternatives.push(alternative);
+        }
+    }
+    if alternatives.is_empty() {
+        return String::new();
+    }
+    let case = if cfg!(windows) { "(?i)" } else { "" };
+    format!("{case}^(?:{})$", alternatives.join("|"))
+}
+
+/// `text` with the characters that mean something in a pattern escaped.
+fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if r"\.+*?()|[]{}^$#&-~".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Show `folder`'s deck, whose server answers: in the preview tab, at the
-/// current slide, or in the system's browser.
-fn open(host: Host, folder: &mut Folder, show: Show) {
+/// current slide, in a tab's Slide view, or in the system's browser.
+fn open(host: Host, folder: &mut Folder, show: &Show) {
     let Some(port) = folder.server().map(|s| s.port) else { return };
     let url = format!("http://localhost:{port}/{}", folder.page());
     match show {
@@ -556,6 +665,7 @@ fn open(host: Host, folder: &mut Folder, show: Show) {
                 host.toast(format!("Couldn't open the browser: {err}"));
             }
         }
+        Show::File(path) => _ = host.load_file_view(&folder.root, &path.to_string_lossy(), SLIDE, &url),
     }
 }
 
@@ -649,5 +759,21 @@ mod tests {
         assert_eq!(config.port(), 3030);
         assert!(config.command.is_empty() && config.sync && config.title_bar_button);
         assert_eq!(manifest.views[0].id, VIEW);
+    }
+
+    #[test]
+    fn the_slide_view_matches_the_decks_files_only() {
+        let deck = Path::new(r"C:\talks\a+b\slides.md");
+        let pattern = files_pattern(&[deck, Path::new(r"C:\talks\a+b\pages\intro.md"), deck]);
+        let re = regex::Regex::new(&pattern).unwrap();
+        assert!(re.is_match(r"C:\talks\a+b\slides.md"));
+        assert!(re.is_match("C:/talks/a+b/pages/intro.md"));
+        assert!(!re.is_match(r"C:\talks\aab\slides.md"));
+        assert!(!re.is_match(r"C:\talks\a+b\slides.md.bak"));
+        if cfg!(windows) {
+            assert!(re.is_match(r"c:\Talks\A+B\Slides.md"));
+        }
+        assert_eq!(pattern.matches('|').count(), 1);
+        assert_eq!(files_pattern(&[]), "");
     }
 }
