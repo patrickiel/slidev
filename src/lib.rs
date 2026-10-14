@@ -22,7 +22,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use den_extension::view::{Column, Content, Line, Row, SelectOption, Span, ToolbarItem, actions};
-use den_extension::{Button, Context, Extension, FileView, Host, events, register};
+use den_extension::{Context, Extension, FileView, Host, events, register};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -47,12 +47,11 @@ struct Config {
     port: f64,
     command: String,
     sync: bool,
-    title_bar_button: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { port: 3030., command: String::new(), sync: true, title_bar_button: true }
+        Config { port: 3030., command: String::new(), sync: true }
     }
 }
 
@@ -145,7 +144,6 @@ struct Folder {
     servers: Vec<Server>,
     /// The deck the preview tab shows.
     previewing: Option<PathBuf>,
-    button: bool,
     /// The pattern of the Slide file view, as last set.
     file_pattern: String,
 }
@@ -165,7 +163,6 @@ impl Folder {
             sync,
             servers: Vec::new(),
             previewing: None,
-            button: false,
             file_pattern: String::new(),
         }
     }
@@ -235,7 +232,6 @@ impl Worker {
         let path = text("path").map(PathBuf::from);
         match name {
             events::WORKSPACE_OPENED => {
-                self.set_button(&root);
                 self.set_file_view(&root);
             }
             events::ACTIVE_FILE_CHANGED => {
@@ -254,7 +250,7 @@ impl Worker {
                     self.cursor(&root, &path, line);
                 }
             }
-            events::COMMAND | events::BUTTON_CLICKED => match text("id").as_deref() {
+            events::COMMAND => match text("id").as_deref() {
                 Some("show") => self.show(&root),
                 Some("preview") => self.preview(&root, Show::Tab),
                 Some("open-external") => self.preview(&root, Show::Browser),
@@ -292,25 +288,6 @@ impl Worker {
         }
     }
 
-    /// The title bar's Slides button, on a folder with a deck.
-    fn set_button(&mut self, root: &str) {
-        let show = self.config.title_bar_button;
-        let host = self.host;
-        let folder = self.folder(root);
-        if !show || folder.button || folder.decks.is_empty() {
-            return;
-        }
-        folder.button = true;
-        let button = Button {
-            id: "show".into(),
-            label: "Slides".into(),
-            icon: "presentation".into(),
-            tooltip: "Show the deck's slides".into(),
-            ..Default::default()
-        };
-        _ = host.set_buttons(root, &[button]);
-    }
-
     /// Slide beside Source and Preview, above the decks and the files the
     /// one shown imports.
     fn set_file_view(&mut self, root: &str) {
@@ -345,7 +322,6 @@ impl Worker {
             return;
         }
         folder.set_deck(path);
-        self.set_button(root);
         self.set_file_view(root);
         self.draw(root);
     }
@@ -545,7 +521,6 @@ impl Worker {
                         }
                     }
                 }
-                self.set_button(root);
                 self.set_file_view(root);
                 self.draw(root);
             }
@@ -757,7 +732,7 @@ mod tests {
         let manifest = den_extension::Manifest::parse(include_str!("../extension.json")).unwrap();
         let config = config(manifest.settings_values(&Default::default()));
         assert_eq!(config.port(), 3030);
-        assert!(config.command.is_empty() && config.sync && config.title_bar_button);
+        assert!(config.command.is_empty() && config.sync);
         assert_eq!(manifest.views[0].id, VIEW);
     }
 

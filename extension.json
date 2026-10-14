@@ -1,7 +1,7 @@
 {
   "id": "slidev",
   "name": "Slidev",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "repository": "patrickiel/slidev",
   "api": 1,
   "icon": "icon.svg",
@@ -9,8 +9,7 @@
   "settings": [
     { "key": "port", "title": "Port", "description": "The port the dev server starts on; the next free one when it is taken.", "type": "number", "default": 3030 },
     { "key": "command", "title": "Dev server command", "description": "How to start Slidev, with {args} for the deck and port, such as \"pnpm slidev {args}\". Empty picks pnpm, yarn, bun or npx by the project's lockfile.", "type": "string", "default": "" },
-    { "key": "sync", "title": "Preview follows the cursor", "description": "Move the preview to the slide the cursor is on (the Sync button switches it per window).", "type": "boolean", "default": true },
-    { "key": "title_bar_button", "title": "Title bar button", "description": "A Slides button in the title bar of windows on a folder with a Slidev deck (after a restart).", "type": "boolean", "default": true }
+    { "key": "sync", "title": "Preview follows the cursor", "description": "Move the preview to the slide the cursor is on (the Sync button switches it per window).", "type": "boolean", "default": true }
   ],
   "commands": [
     { "id": "show", "title": "Show Slides", "keybinding": "ctrl-alt-shift-s" },
@@ -19,6 +18,6 @@
     { "id": "export", "title": "Export Slides to PDF" }
   ],
   "views": [
-    { "id": "slides", "title": "Slides", "icon": "presentation" }
+    { "id": "slides", "title": "Slides", "icon": "presentation", "location": "sidebar" }
   ]
 }
