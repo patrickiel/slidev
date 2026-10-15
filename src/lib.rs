@@ -566,7 +566,7 @@ impl Worker {
         let content = Content {
             toolbar: Some(toolbar(folder)),
             // Untitled columns: a list, not a table.
-            columns: Some(vec![Column { title: String::new(), width: Some(44.) }, Column { title: String::new(), width: None }]),
+            columns: Some(vec![Column { title: String::new(), width: Some(44.), ..Default::default() }, Column { title: String::new(), ..Default::default() }]),
             rows: Some(folder.slides.entries.iter().map(|e| row(folder, e, digits)).collect()),
             selected: Some(folder.current.map(|i| i.to_string()).unwrap_or_default()),
             detail: Some(detail(folder)),
