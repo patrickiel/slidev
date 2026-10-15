@@ -139,17 +139,17 @@ struct Folder {
     /// The slide the cursor or the outline is on, by its index.
     current: Option<usize>,
     view_open: bool,
-    /// The preview follows the cursor.
-    sync: bool,
     servers: Vec<Server>,
     /// The deck the preview tab shows.
     previewing: Option<PathBuf>,
+    /// The files whose tabs have a Slide page.
+    slide_pages: Vec<PathBuf>,
     /// The pattern of the Slide file view, as last set.
     file_pattern: String,
 }
 
 impl Folder {
-    fn new(root: &str, sync: bool) -> Self {
+    fn new(root: &str) -> Self {
         let decks = server::find_decks(Path::new(root));
         let deck = decks.first().cloned();
         let slides = deck.as_deref().map(Deck::load).unwrap_or_default();
@@ -160,9 +160,9 @@ impl Folder {
             slides,
             current: None,
             view_open: false,
-            sync,
             servers: Vec::new(),
             previewing: None,
+            slide_pages: Vec::new(),
             file_pattern: String::new(),
         }
     }
@@ -220,10 +220,7 @@ impl Worker {
 
     /// The window on `root`'s state, read the first time it is asked for.
     fn folder(&mut self, root: &str) -> &mut Folder {
-        let sync = self.config.sync;
-        self.folders
-            .entry(root.to_string())
-            .or_insert_with(|| Folder::new(root, sync))
+        self.folders.entry(root.to_string()).or_insert_with(|| Folder::new(root))
     }
 
     fn event(&mut self, name: &str, mut data: Value) {
@@ -279,7 +276,6 @@ impl Worker {
                     self.config = config(settings);
                     let roots: Vec<String> = self.folders.keys().cloned().collect();
                     for root in roots {
-                        self.folder(&root).sync = self.config.sync;
                         self.draw(&root);
                     }
                 }
@@ -352,9 +348,8 @@ impl Worker {
             return;
         }
         folder.current = index;
-        let sync = folder.sync;
         self.select(root);
-        if sync {
+        if self.config.sync {
             self.navigate(root);
         }
     }
@@ -370,6 +365,9 @@ impl Worker {
         }
         if let Some(index) = folder.slides.slide_at(&path, line) {
             folder.current = Some(index);
+        }
+        if !folder.slide_pages.contains(&path) {
+            folder.slide_pages.push(path.clone());
         }
         let page = folder.page();
         let serving = folder.server().filter(|s| s.state == State::Ready).map(|s| s.port);
@@ -467,22 +465,26 @@ impl Worker {
         }
     }
 
-    /// Move the preview to the current slide, without reloading it.
+    /// Move the preview and the deck's Slide pages to the current slide,
+    /// without reloading them.
     fn navigate(&mut self, root: &str) {
         let host = self.host;
         let folder = self.folder(root);
-        let showing = match (&folder.previewing, &folder.deck) {
-            (Some(previewing), Some(deck)) => same_file(previewing, deck),
-            _ => false,
-        };
-        if !showing || folder.server().is_none_or(|s| s.state != State::Ready) {
+        if folder.server().is_none_or(|s| s.state != State::Ready) {
             return;
         }
-        _ = host.browser_script(root, PREVIEW, &navigate_script(folder.page()));
+        let script = navigate_script(folder.page());
+        if let (Some(previewing), Some(deck)) = (&folder.previewing, &folder.deck)
+            && same_file(previewing, deck)
+        {
+            _ = host.browser_script(root, PREVIEW, &script);
+        }
+        for path in folder.slide_pages.iter().filter(|p| folder.slides.has_file(p)) {
+            _ = host.file_view_script(root, &path.to_string_lossy(), SLIDE, &script);
+        }
     }
 
     fn action(&mut self, root: &str, action: &str, row: Option<String>, data: Option<String>, value: Option<String>) {
-        let host = self.host;
         match action {
             actions::SELECT | actions::OPEN => {
                 let Some(index) = row.and_then(|r| r.parse().ok()) else { return };
@@ -500,16 +502,6 @@ impl Worker {
             }
             "preview" => self.preview(root, Show::Tab),
             "external" => self.preview(root, Show::Browser),
-            "sync" => {
-                let folder = self.folder(root);
-                folder.sync = !folder.sync;
-                let sync = folder.sync;
-                let content = Content { toolbar: Some(toolbar(self.folder(root))), ..Default::default() };
-                _ = host.set_view(root, VIEW, &content);
-                if sync {
-                    self.navigate(root);
-                }
-            }
             "refresh" => {
                 let folder = self.folder(root);
                 folder.decks = server::find_decks(Path::new(root));
@@ -569,14 +561,13 @@ impl Worker {
             Some(deck) if folder.slides.entries.is_empty() => format!("{} has no slides.", folder.relative(deck)),
             Some(_) => String::new(),
         };
+        let last = folder.slides.entries.iter().filter_map(|e| e.no).max().unwrap_or(1);
+        let digits = last.to_string().len();
         let content = Content {
             toolbar: Some(toolbar(folder)),
-            columns: Some(vec![
-                Column { title: "#".into(), width: Some(44.) },
-                Column { title: "Title".into(), width: None },
-                Column { title: "Layout".into(), width: Some(110.) },
-            ]),
-            rows: Some(folder.slides.entries.iter().map(|e| row(folder, e)).collect()),
+            // Untitled columns: a list, not a table.
+            columns: Some(vec![Column { title: String::new(), width: Some(44.) }, Column { title: String::new(), width: None }]),
+            rows: Some(folder.slides.entries.iter().map(|e| row(folder, e, digits)).collect()),
             selected: Some(folder.current.map(|i| i.to_string()).unwrap_or_default()),
             detail: Some(detail(folder)),
             message: Some(message),
@@ -660,29 +651,32 @@ fn toolbar(folder: &Folder) -> Vec<ToolbarItem> {
     }
     items.extend([
         ToolbarItem::spacer(),
-        ToolbarItem::button("preview", "Preview", "play").tooltip("Show the slides beside the editor, starting the dev server"),
-        ToolbarItem::button("sync", "", "link").tooltip("The preview follows the cursor").active(folder.sync),
+        ToolbarItem::button("preview", "", "play").tooltip("Show the slides beside the editor, starting the dev server"),
         ToolbarItem::button("external", "", "external-link").tooltip("Open the slides in the browser"),
         ToolbarItem::button("refresh", "", "refresh-cw").tooltip("Read the deck again"),
     ]);
     items
 }
 
-fn row(folder: &Folder, entry: &Entry) -> Row {
+/// A slide's number, padded to `digits` in a fixed-width font so the
+/// numbers line up on the right; its title; and its layout as a badge.
+fn row(folder: &Folder, entry: &Entry, digits: usize) -> Row {
     let mut title = vec![Span::text(entry.slide.title())];
+    let layout = entry.slide.layout();
+    if !layout.is_empty() {
+        title.push(Span::text(layout).background("#475569"));
+    }
     if folder.deck.as_deref().is_some_and(|deck| !same_file(deck, &entry.file)) {
         let name = entry.file.file_name().unwrap_or_default().to_string_lossy();
-        title.push(Span::text(format!("  {name}")).dim().tooltip(folder.relative(&entry.file)));
+        title.push(Span::text(name).dim().tooltip(folder.relative(&entry.file)));
     }
-    let layout = entry.slide.layout();
-    let layout = if layout.is_empty() { Vec::new() } else { vec![Span::text(layout).background("#475569")] };
     let no = match entry.no {
-        Some(no) => Span::text(no.to_string()),
-        None => Span::text("–").tooltip("Hidden"),
+        Some(no) => Span::text(format!("{no:>digits$}")),
+        None => Span::text(format!("{:>digits$}", "–")).tooltip("Hidden"),
     };
     Row {
         id: entry.index.to_string(),
-        cells: vec![no.dim().into(), title.into(), layout.into()],
+        cells: vec![no.dim().mono().into(), title.into()],
         dim: entry.no.is_none(),
         ..Default::default()
     }

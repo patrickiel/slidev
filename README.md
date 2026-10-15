@@ -3,7 +3,7 @@
 [Slidev](https://sli.dev) decks in den, after Slidev's own extension for VS Code. Open the outline with the **Slides** button in the title bar (after den's Explorer, Search and Source Control), *Slidev: Show Slides* in den's menu, or <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>.
 
 - **The outline:** in the sidebar, beside the Explorer. Every slide of the deck with its number, title and layout, as Slidev numbers them. Hidden slides (`hide: true`) are faded and unnumbered, and slides a `src:` imports show the file they come from. Click a slide for its file, frontmatter and notes; double-click it (or Enter) to put the editor's cursor on it.
-- **The preview:** **Preview** starts the dev server in a terminal (or uses the one already serving this deck) and shows the slides in a browser tab, where den puts browsers. The preview goes to the slide you click in the outline, and, with **Sync** on, to the slide the editor's cursor is in, without reloading.
+- **The preview:** the **Preview** button (▷) starts the dev server in a terminal (or uses the one already serving this deck) and shows the slides in a browser tab, where den puts browsers. The preview, and a Slide page (below), go to the slide you click in the outline and to the slide the editor's cursor is in, without reloading.
 - **The slide, in place:** a deck's tab has **Slide** beside Source and Preview. It shows the slide the cursor is on in place of the editor, starting the dev server if it isn't running; switch back to Source to edit, and Slide again to see the slide you're on now.
 - **Open in the browser** shows the slides in your system's browser; *Export Slides to PDF* runs `slidev export` in a terminal.
 - **Decks** are files named `slides.md`, and the Markdown files of a package that depends on `@slidev/cli`. The deck of the active tab is the one shown; with several in the folder, the toolbar picks between them.
@@ -16,7 +16,7 @@ The outline follows the deck as saved: save to see an edit there. Slidev itself 
 | --- | --- |
 | **Port** | Where the dev server starts (3030), or the next free port |
 | **Dev server command** | How to start Slidev, with `{args}` for the deck and port, such as `pnpm slidev {args} --remote`. Empty picks `pnpm exec slidev`, `yarn slidev`, `bunx slidev` or `npx slidev` by the project's lockfile |
-| **Preview follows the cursor** | Whether Sync starts on (the toolbar's Sync button switches it per window) |
+| **Preview follows the cursor** | Whether the preview goes to the slide the cursor is in (on) |
 
 ## How it works
 

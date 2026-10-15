@@ -9,7 +9,7 @@
   "settings": [
     { "key": "port", "title": "Port", "description": "The port the dev server starts on; the next free one when it is taken.", "type": "number", "default": 3030 },
     { "key": "command", "title": "Dev server command", "description": "How to start Slidev, with {args} for the deck and port, such as \"pnpm slidev {args}\". Empty picks pnpm, yarn, bun or npx by the project's lockfile.", "type": "string", "default": "" },
-    { "key": "sync", "title": "Preview follows the cursor", "description": "Move the preview to the slide the cursor is on (the Sync button switches it per window).", "type": "boolean", "default": true }
+    { "key": "sync", "title": "Preview follows the cursor", "description": "Move the preview to the slide the cursor is on.", "type": "boolean", "default": true }
   ],
   "commands": [
     { "id": "show", "title": "Show Slides", "keybinding": "ctrl-alt-shift-s" },
