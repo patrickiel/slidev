@@ -4,7 +4,7 @@
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Markdown that is never a deck.
 const NOT_DECKS: [&str; 4] = ["readme.md", "changelog.md", "license.md", "contributing.md"];
@@ -150,6 +150,29 @@ pub fn ping(port: u16) -> bool {
     probe(port).is_some()
 }
 
+/// Move the pages of the Slidev on `port` to `page`, as its presenter does:
+/// a patch of the `nav` state the server shares with its pages, which follow
+/// a presenter without reloading. Whether the server took it.
+pub fn navigate(port: u16, page: usize) -> bool {
+    let time = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_millis() as u64);
+    let body = serde_json::json!({
+        "source": "den",
+        "patch": { "page": page, "clicks": 0, "lastUpdate": { "id": "den", "type": "presenter", "time": time } },
+        "timestamp": time,
+    })
+    .to_string();
+    let request = format!(
+        "POST /@server-reactive/nav HTTP/1.0\r\nHost: localhost:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    loopbacks(port).iter().any(|addr| {
+        let Ok(mut stream) = TcpStream::connect_timeout(addr, Duration::from_millis(300)) else { return false };
+        _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let mut status = [0; 12];
+        stream.write_all(request.as_bytes()).is_ok() && stream.read_exact(&mut status).is_ok() && status.ends_with(b" 200")
+    })
+}
+
 /// The deck a Slidev page says it serves, or "".
 fn entry_of(page: &str) -> String {
     let Some(at) = page.find("property=\"slidev:entry\"") else {
@@ -250,6 +273,29 @@ mod tests {
 <meta property="slidev:entry" content="C:/talks/a&amp;b/slides.md"><title>x</title>"#;
         assert_eq!(entry_of(page), "C:/talks/a&b/slides.md");
         assert_eq!(entry_of("<title>Slidev</title>"), "");
+    }
+
+    #[test]
+    fn navigating_patches_the_servers_nav_state() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 1024];
+            while !request.ends_with(b"}") {
+                let read = stream.read(&mut chunk).unwrap();
+                request.extend_from_slice(&chunk[..read]);
+            }
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        assert!(navigate(port, 7));
+        let request = server.join().unwrap();
+        assert!(request.starts_with("POST /@server-reactive/nav HTTP/1.0\r\n"));
+        let body: serde_json::Value = serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["patch"]["page"], 7);
+        assert_eq!(body["patch"]["lastUpdate"]["type"], "presenter");
     }
 
     #[test]

@@ -5,7 +5,7 @@
   "repository": "patrickiel/slidev",
   "api": 1,
   "icon": "icon.svg",
-  "description": "Slidev decks in den: the slides as an outline, a live preview that follows the cursor, and the dev server one click away.",
+  "description": "Slidev decks in den: the slides as an outline, a live preview in the browser that follows the cursor, and the dev server one click away.",
   "settings": [
     { "key": "port", "title": "Port", "description": "The port the dev server starts on; the next free one when it is taken.", "type": "number", "default": 3030 },
     { "key": "command", "title": "Dev server command", "description": "How to start Slidev, with {args} for the deck and port, such as \"pnpm slidev {args}\". Empty picks pnpm, yarn, bun or npx by the project's lockfile.", "type": "string", "default": "" },
@@ -14,7 +14,6 @@
   "commands": [
     { "id": "show", "title": "Show Slides", "keybinding": "ctrl-alt-shift-s" },
     { "id": "preview", "title": "Preview Slides" },
-    { "id": "open-external", "title": "Open Slides in Browser" },
     { "id": "export", "title": "Export Slides to PDF" }
   ],
   "views": [

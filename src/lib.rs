@@ -1,14 +1,14 @@
 //! Slidev for den, after Slidev's own extension for VS Code: a deck's slides
-//! as an outline in a tab of their own, a preview in a browser tab that
+//! as an outline in a tab of their own, a preview in the browser that
 //! follows the editor's cursor, and the dev server started on demand.
 //!
 //! den draws the outline from data (`den_extension::view`). The deck is
-//! split into slides here (`slides.rs`), and the server is found, started
-//! and waited for here too (`server.rs`). The preview is a browser tab this
-//! extension owns (`open_browser` with a tab name), moved from slide to slide
-//! with a `navigate` message Slidev's page listens for, so it never reloads.
-//! A deck's tab also offers Slide beside Source and Preview: a file view
-//! (`set_file_views`) whose page shows the slide under the cursor.
+//! split into slides here (`slides.rs`), and the server is found, started,
+//! waited for and moved from slide to slide here too (`server.rs`). The
+//! preview is Slidev's own page in the system's browser: told the slide
+//! through the server, as a presenter tells it, it goes there without
+//! reloading. A deck's tab also offers Slide beside Source and Preview: a
+//! file view (`set_file_views`) that opens the slide under the cursor.
 //! A worker thread owns each folder's state and takes den's events over a
 //! channel; between them it waits for starting servers to answer.
 
@@ -30,8 +30,6 @@ use crate::slides::{Deck, Entry, same_file};
 
 /// The view's id in the manifest.
 const VIEW: &str = "slides";
-/// The name of the preview's browser tab.
-const PREVIEW: &str = "preview";
 /// The id of the Slide file view.
 const SLIDE: &str = "slide";
 /// How often a starting server is asked whether it is up.
@@ -114,7 +112,6 @@ enum State {
 /// Where to show the deck once its server answers.
 #[derive(Clone, Debug, PartialEq)]
 enum Show {
-    Tab,
     Browser,
     /// The Slide view of this file's tab.
     File(PathBuf),
@@ -140,10 +137,6 @@ struct Folder {
     current: Option<usize>,
     view_open: bool,
     servers: Vec<Server>,
-    /// The deck the preview tab shows.
-    previewing: Option<PathBuf>,
-    /// The files whose tabs have a Slide page.
-    slide_pages: Vec<PathBuf>,
     /// The pattern of the Slide file view, as last set.
     file_pattern: String,
 }
@@ -161,8 +154,6 @@ impl Folder {
             current: None,
             view_open: false,
             servers: Vec::new(),
-            previewing: None,
-            slide_pages: Vec::new(),
             file_pattern: String::new(),
         }
     }
@@ -249,15 +240,14 @@ impl Worker {
             }
             events::COMMAND => match text("id").as_deref() {
                 Some("show") => self.show(&root),
-                Some("preview") => self.preview(&root, Show::Tab),
-                Some("open-external") => self.preview(&root, Show::Browser),
+                Some("preview") => self.preview(&root, Show::Browser),
                 Some("export") => self.export(&root),
                 _ => {}
             },
             events::FILE_VIEW_SHOWN if text("view").as_deref() == Some(SLIDE) => {
                 let line = data["line"].as_u64().unwrap_or(1) as usize;
                 if let Some(path) = path {
-                    self.slide_shown(&root, path, line, text("url"));
+                    self.slide_shown(&root, path, line);
                 }
             }
             events::VIEW_OPENED if text("view").as_deref() == Some(VIEW) => {
@@ -354,10 +344,9 @@ impl Worker {
         }
     }
 
-    /// A tab switched to Slide: its page goes to the slide under the
-    /// file's cursor, moved there when it already shows the deck's server.
-    fn slide_shown(&mut self, root: &str, path: PathBuf, line: usize, url: Option<String>) {
-        let host = self.host;
+    /// A tab's Slide was clicked: the slide under the file's cursor opens,
+    /// once the server answers.
+    fn slide_shown(&mut self, root: &str, path: PathBuf, line: usize) {
         self.file_shown(root, path.clone());
         let folder = self.folder(root);
         if !folder.slides.has_file(&path) {
@@ -366,19 +355,7 @@ impl Worker {
         if let Some(index) = folder.slides.slide_at(&path, line) {
             folder.current = Some(index);
         }
-        if !folder.slide_pages.contains(&path) {
-            folder.slide_pages.push(path.clone());
-        }
-        let page = folder.page();
-        let serving = folder.server().filter(|s| s.state == State::Ready).map(|s| s.port);
         self.select(root);
-        if let Some(port) = serving
-            && url.is_some_and(|url| url.starts_with(&format!("http://localhost:{port}/")))
-            && server::ping(port)
-        {
-            _ = host.file_view_script(root, &path.to_string_lossy(), SLIDE, &navigate_script(page));
-            return;
-        }
         self.preview(root, Show::File(path));
     }
 
@@ -388,8 +365,8 @@ impl Worker {
         }
     }
 
-    /// Show the deck in the preview tab, or the system's browser: at once
-    /// when its server answers, else once the server started for it does.
+    /// Show the deck in the system's browser: at once when its server
+    /// answers, else once the server started for it does.
     fn preview(&mut self, root: &str, show: Show) {
         let (host, config) = (self.host, self.config.clone());
         let folder = self.folder(root);
@@ -465,22 +442,12 @@ impl Worker {
         }
     }
 
-    /// Move the preview and the deck's Slide pages to the current slide,
+    /// Move the deck's pages, in whichever browser, to the current slide
     /// without reloading them.
     fn navigate(&mut self, root: &str) {
-        let host = self.host;
         let folder = self.folder(root);
-        if folder.server().is_none_or(|s| s.state != State::Ready) {
-            return;
-        }
-        let script = navigate_script(folder.page());
-        if let (Some(previewing), Some(deck)) = (&folder.previewing, &folder.deck)
-            && same_file(previewing, deck)
-        {
-            _ = host.browser_script(root, PREVIEW, &script);
-        }
-        for path in folder.slide_pages.iter().filter(|p| folder.slides.has_file(p)) {
-            _ = host.file_view_script(root, &path.to_string_lossy(), SLIDE, &script);
+        if let Some(port) = folder.server().filter(|s| s.state == State::Ready).map(|s| s.port) {
+            server::navigate(port, folder.page());
         }
     }
 
@@ -500,8 +467,7 @@ impl Worker {
                     self.go_to(root, index);
                 }
             }
-            "preview" => self.preview(root, Show::Tab),
-            "external" => self.preview(root, Show::Browser),
+            "preview" => self.preview(root, Show::Browser),
             "refresh" => {
                 let folder = self.folder(root);
                 folder.decks = server::find_decks(Path::new(root));
@@ -577,11 +543,6 @@ impl Worker {
     }
 }
 
-/// The script that moves Slidev's page to `page`, without reloading it.
-fn navigate_script(page: usize) -> String {
-    format!("window.postMessage({{ target: 'slidev', type: 'navigate', no: {page}, clicks: 0 }}, '*')")
-}
-
 /// A pattern that matches `files`' paths and nothing else, whichever way
 /// their separators go (and, on Windows, in any case); empty for none.
 fn files_pattern(files: &[&Path]) -> String {
@@ -616,16 +577,12 @@ fn escape(text: &str) -> String {
     out
 }
 
-/// Show `folder`'s deck, whose server answers: in the preview tab, at the
-/// current slide, in a tab's Slide view, or in the system's browser.
-fn open(host: Host, folder: &mut Folder, show: &Show) {
+/// Show `folder`'s deck, whose server answers, at the current slide: in the
+/// system's browser, or as a tab's Slide view.
+fn open(host: Host, folder: &Folder, show: &Show) {
     let Some(port) = folder.server().map(|s| s.port) else { return };
     let url = format!("http://localhost:{port}/{}", folder.page());
     match show {
-        Show::Tab => {
-            _ = host.open_browser(&folder.root, &url, Some(PREVIEW));
-            folder.previewing = folder.deck.clone();
-        }
         Show::Browser => {
             if let Err(err) = server::open_external(&url) {
                 host.toast(format!("Couldn't open the browser: {err}"));
@@ -651,8 +608,7 @@ fn toolbar(folder: &Folder) -> Vec<ToolbarItem> {
     }
     items.extend([
         ToolbarItem::spacer(),
-        ToolbarItem::button("preview", "", "play").tooltip("Show the slides beside the editor, starting the dev server"),
-        ToolbarItem::button("external", "", "external-link").tooltip("Open the slides in the browser"),
+        ToolbarItem::button("preview", "", "play").tooltip("Show the slides in the browser, starting the dev server"),
         ToolbarItem::button("refresh", "", "refresh-cw").tooltip("Read the deck again"),
     ]);
     items
