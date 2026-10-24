@@ -162,9 +162,11 @@ pub fn navigate(port: u16, page: usize) -> bool {
     })
     .to_string();
     let request = format!(
-        "POST /@server-reactive/nav HTTP/1.0\r\nHost: localhost:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        "POST /@server-reactive/nav HTTP/1.1\r\nHost: localhost:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
     );
+    // HTTP/1.1, so the server keeps the connection and this end closes it:
+    // a filter on loopback traffic may swallow a reply the server closed after.
     loopbacks(port).iter().any(|addr| {
         let Ok(mut stream) = TcpStream::connect_timeout(addr, Duration::from_millis(300)) else { return false };
         _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
@@ -288,11 +290,13 @@ mod tests {
                 request.extend_from_slice(&chunk[..read]);
             }
             stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").unwrap();
+            // Kept open, as Vite keeps it, until the client closes it.
+            while stream.read(&mut chunk).is_ok_and(|read| read > 0) {}
             String::from_utf8(request).unwrap()
         });
         assert!(navigate(port, 7));
         let request = server.join().unwrap();
-        assert!(request.starts_with("POST /@server-reactive/nav HTTP/1.0\r\n"));
+        assert!(request.starts_with("POST /@server-reactive/nav HTTP/1.1\r\n"));
         let body: serde_json::Value = serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
         assert_eq!(body["patch"]["page"], 7);
         assert_eq!(body["patch"]["lastUpdate"]["type"], "presenter");
